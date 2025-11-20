@@ -9,9 +9,10 @@ const router = express.Router();
 function buildAssetUrl(path) {
   if (!path) return "";
   if (path.startsWith("http")) return path;
-  const baseUrl = process.env.API_BASE_URL || "http://localhost:5000";
+  const baseUrl = process.env.API_BASE_URL || "https://choisex.com";
   return `${baseUrl}${path}`;
 }
+
 
 // Get all categories (public)
 router.get("/categories", asyncHandler(async (req, res) => {
