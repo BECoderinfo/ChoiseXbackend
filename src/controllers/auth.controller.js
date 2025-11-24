@@ -1,8 +1,8 @@
-const axios = require("axios");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const Admin = require("../models/admin.model");
 const asyncHandler = require("../utils/asyncHandler");
+const { sendOTPEmail } = require("../utils/emailService");
 
 const OTP_EXPIRY_MINUTES = 5;
 
@@ -18,17 +18,17 @@ async function ensureAdminSeeded() {
   let admin = await Admin.findOne();
 
   if (!admin) {
-    const phone = requireEnv("ADMIN_PHONE");
+    const email = requireEnv("ADMIN_EMAIL");
     const password = requireEnv("ADMIN_PASSWORD");
     const passwordHash = await bcrypt.hash(password, 12);
 
-    admin = await Admin.create({ phone, passwordHash });
+    admin = await Admin.create({ email: email.toLowerCase(), passwordHash });
     return admin;
   }
 
-  const envPhone = process.env.ADMIN_PHONE;
-  if (envPhone && admin.phone !== envPhone) {
-    admin.phone = envPhone;
+  const envEmail = process.env.ADMIN_EMAIL;
+  if (envEmail && admin.email !== envEmail.toLowerCase()) {
+    admin.email = envEmail.toLowerCase();
     await admin.save();
   }
 
@@ -40,45 +40,16 @@ function signToken(payload, expiresIn = "12h") {
   return jwt.sign(payload, secret, { expiresIn });
 }
 
-async function sendOtpViaMsg91({ mobile, otp }) {
-  const authKey = process.env.MSG91AUTHKEY;
-  const templateId = process.env.MSG91_TEMPLATE_ID;
-  const senderId = process.env.MSG91_SENDER_ID;
-
-  if (!authKey || !templateId || !senderId) {
-    console.warn("MSG91 credentials incomplete; OTP will be logged only.");
-    console.log(`OTP for ${mobile}: ${otp}`);
-    return;
-  }
-
-  const url = "https://control.msg91.com/api/v5/otp";
-
-  const payload = {
-    template_id: templateId,
-    sender: senderId,
-    mobile,
-    otp,
-    otp_length: otp.length,
-  };
-
-  const headers = {
-    "Content-Type": "application/json",
-    authkey: authKey,
-  };
-
-  await axios.post(url, payload, { headers });
-}
-
 const loginAdmin = asyncHandler(async (req, res) => {
-  const { phone, password } = req.body || {};
+  const { email, password } = req.body || {};
 
-  if (!phone || !password) {
-    return res.status(400).json({ success: false, message: "Phone and password are required" });
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: "Email and password are required" });
   }
 
   const admin = await ensureAdminSeeded();
 
-  if (admin.phone !== phone) {
+  if (admin.email !== email.toLowerCase()) {
     return res.status(401).json({ success: false, message: "Invalid credentials" });
   }
 
@@ -92,15 +63,15 @@ const loginAdmin = asyncHandler(async (req, res) => {
 });
 
 const sendForgotPasswordOtp = asyncHandler(async (req, res) => {
-  const { phone } = req.body || {};
+  const { email } = req.body || {};
 
-  if (!phone) {
-    return res.status(400).json({ success: false, message: "Phone is required" });
+  if (!email) {
+    return res.status(400).json({ success: false, message: "Email is required" });
   }
 
   const admin = await ensureAdminSeeded();
 
-  if (admin.phone !== phone) {
+  if (admin.email !== email.toLowerCase()) {
     return res.status(404).json({ success: false, message: "Admin not found" });
   }
 
@@ -112,21 +83,29 @@ const sendForgotPasswordOtp = asyncHandler(async (req, res) => {
   admin.otpExpiresAt = otpExpiresAt;
   await admin.save();
 
-  await sendOtpViaMsg91({ mobile: phone, otp });
-
-  res.json({ success: true, message: "OTP sent successfully" });
+  // Send OTP via email
+  try {
+    await sendOTPEmail(admin.email, otp);
+    res.json({ success: true, message: "OTP sent to your email successfully" });
+  } catch (error) {
+    console.error("Error sending OTP email:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to send OTP email. Please try again later.",
+    });
+  }
 });
 
 const verifyForgotPasswordOtp = asyncHandler(async (req, res) => {
-  const { phone, otp } = req.body || {};
+  const { email, otp } = req.body || {};
 
-  if (!phone || !otp) {
-    return res.status(400).json({ success: false, message: "Phone and OTP are required" });
+  if (!email || !otp) {
+    return res.status(400).json({ success: false, message: "Email and OTP are required" });
   }
 
   const admin = await ensureAdminSeeded();
 
-  if (admin.phone !== phone) {
+  if (admin.email !== email.toLowerCase()) {
     return res.status(404).json({ success: false, message: "Admin not found" });
   }
 

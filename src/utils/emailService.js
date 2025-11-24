@@ -14,7 +14,8 @@ let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
 
-  const emailService = process.env.EMAIL_SERVICE || "gmail";
+  const emailHost = process.env.EMAIL_HOST;
+  const emailPort = process.env.EMAIL_PORT;
   const emailUser = process.env.EMAIL_USER;
   const emailPassword = process.env.EMAIL_PASSWORD;
 
@@ -24,7 +25,9 @@ function getTransporter() {
   }
 
   transporter = nodemailer.createTransport({
-    service: emailService,
+    host: emailHost,
+    port: emailPort,
+    secure: true,
     auth: {
       user: emailUser,
       pass: emailPassword,
@@ -106,5 +109,3 @@ module.exports = {
   sendOTPEmail,
   sendWelcomeEmail,
 };
-
-
