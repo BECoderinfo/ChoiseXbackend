@@ -4,6 +4,9 @@ const productRoutes = require("./product.routes");
 const authRoutes = require("./auth.routes");
 const publicRoutes = require("./public.routes");
 const userAuthRoutes = require("./userAuth.routes");
+const cartRoutes = require("./cart.routes");
+const orderRoutes = require("./order.routes");
+const addressRoutes = require("./address.routes");
 
 
 const router = express.Router();
@@ -18,6 +21,9 @@ router.use("/user/auth", userAuthRoutes);
 router.use("/categories", categoryRoutes);
 router.use("/products", productRoutes);
 router.use("/auth", authRoutes); // Admin auth routes
+router.use("/cart", cartRoutes); // User cart routes
+router.use("/orders", orderRoutes); // User order routes
+router.use("/addresses", addressRoutes); // User addresses
 
 
 module.exports = router;
