@@ -1,5 +1,6 @@
 const express = require("express");
 const categoryRoutes = require("./category.routes");
+const subcategoryRoutes = require("./subcategory.routes");
 const productRoutes = require("./product.routes");
 const authRoutes = require("./auth.routes");
 const publicRoutes = require("./public.routes");
@@ -19,6 +20,7 @@ router.use("/user/auth", userAuthRoutes);
 
 // Protected routes (authentication required)
 router.use("/categories", categoryRoutes);
+router.use("/subcategories", subcategoryRoutes);
 router.use("/products", productRoutes);
 router.use("/auth", authRoutes); // Admin auth routes
 router.use("/cart", cartRoutes); // User cart routes

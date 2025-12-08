@@ -6,7 +6,7 @@ const asyncHandler = require("../utils/asyncHandler");
 function buildAssetUrl(path) {
   if (!path) return "";
   if (path.startsWith("http")) return path;
-  const baseUrl = process.env.API_BASE_URL || "https://choisex.com";
+  const baseUrl = process.env.API_BASE_URL || "https://choisex.com"; //http://localhost:5000
   return `${baseUrl}${path}`;
 }
 

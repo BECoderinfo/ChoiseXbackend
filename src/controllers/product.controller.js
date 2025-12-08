@@ -1,7 +1,8 @@
 const Product = require("../models/product.model");
+const Subcategory = require("../models/subcategory.model");
 const asyncHandler = require("../utils/asyncHandler");
 
-const MAX_GALLERY_IMAGES = 4;
+const MAX_GALLERY_IMAGES = 3;
 
 function buildFilePath(file) {
   if (!file) return null;
@@ -35,6 +36,7 @@ const createProduct = asyncHandler(async (req, res) => {
     markprice,
     category,
     Availability,
+    subcategory,
     Material,
     Feature,
     Waterproof,
@@ -66,12 +68,22 @@ const createProduct = asyncHandler(async (req, res) => {
     });
   }
 
+  let subcategoryId = subcategory;
+  if (subcategory) {
+    const subcatDoc = await Subcategory.findById(subcategory);
+    if (!subcatDoc) {
+      return res.status(400).json({ success: false, message: "Subcategory not found" });
+    }
+    subcategoryId = subcatDoc._id;
+  }
+
   const product = await Product.create({
     name,
     sku: SKU,
     price: Number(price),
     markprice: Number(markprice),
     category,
+    subcategory: subcategoryId || undefined,
     availability: Number(Availability),
     material: Material,
     feature: Feature,
@@ -87,19 +99,23 @@ const createProduct = asyncHandler(async (req, res) => {
 });
 
 const getProducts = asyncHandler(async (req, res) => {
-  const { category } = req.query;
-  let query = {};
+  const { category, subcategory } = req.query;
+  const query = {};
   
   if (category) {
     query.category = category;
   }
+
+  if (subcategory) {
+    query.subcategory = subcategory;
+  }
   
-  const products = await Product.find(query).populate("category");
+  const products = await Product.find(query).populate("category").populate("subcategory");
   res.json({ success: true, data: products });
 });
 
 const getProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id).populate("category");
+  const product = await Product.findById(req.params.id).populate("category").populate("subcategory");
  
   
   if (!product) {
@@ -119,6 +135,7 @@ const updateProduct = asyncHandler(async (req, res) => {
     category,
     Availability,
     Material,
+    subcategory,
     Feature,
     Waterproof,
     Rechargeable,
@@ -155,6 +172,15 @@ const updateProduct = asyncHandler(async (req, res) => {
     });
   }
 
+  let subcategoryId = subcategory;
+  if (subcategory) {
+    const subcatDoc = await Subcategory.findById(subcategory);
+    if (!subcatDoc) {
+      return res.status(400).json({ success: false, message: "Subcategory not found" });
+    }
+    subcategoryId = subcatDoc._id;
+  }
+
   const payload = {
     name,
     sku: SKU,
@@ -169,6 +195,10 @@ const updateProduct = asyncHandler(async (req, res) => {
     description,
     customerrating: normalizeReviews(customerrating),
   };
+
+  if (subcategory !== undefined) {
+    payload.subcategory = subcategoryId || undefined;
+  }
 
   if (mainImageFile) {
     payload.mainImage = buildFilePath(mainImageFile);

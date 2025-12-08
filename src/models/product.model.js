@@ -17,6 +17,7 @@ const productSchema = new mongoose.Schema(
     price: { type: Number, required: true },
     markprice: { type: Number, required: true },
     category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
+    subcategory: { type: mongoose.Schema.Types.ObjectId, ref: "Subcategory" },
     availability: { type: Number, default: 0 },
     material: { type: String, trim: true },
     feature: { type: String, trim: true },
