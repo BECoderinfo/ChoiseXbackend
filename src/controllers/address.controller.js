@@ -1,7 +1,9 @@
 const Address = require("../models/address.model");
+const User = require("../models/user.model");
 const asyncHandler = require("../utils/asyncHandler");
 
-const REQUIRED_FIELDS = ["name", "mobile", "address", "city", "state", "postal"];
+// Only address-location fields are user-editable. Identity fields are forced from the user profile.
+const REQUIRED_FIELDS = ["address", "city", "state", "postal"];
 
 function validateAddressPayload(body) {
   const missing = REQUIRED_FIELDS.filter((field) => !body[field]);
@@ -22,8 +24,30 @@ const createAddress = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: error });
   }
 
+  // Fetch user profile to lock identity fields
+  const user = await User.findById(req.user.id).select("name email phone");
+  if (!user) {
+    return res.status(401).json({ success: false, message: "User not found. Please login again." });
+  }
+
+  // Enforce address limit (max 3 per user)
+  const existingCount = await Address.countDocuments({ user: req.user.id });
+  if (existingCount >= 3) {
+    return res
+      .status(400)
+      .json({ success: false, message: "You can save up to 3 delivery addresses only." });
+  }
+
+  // Lock identity fields to the logged-in user
   const address = await Address.create({
-    ...req.body,
+    address: req.body.address,
+    area: req.body.area,
+    city: req.body.city,
+    state: req.body.state,
+    postal: req.body.postal,
+    name: user.name,
+    mobile: user.phone || "",
+    email: user.email,
     user: req.user.id,
   });
 
@@ -41,9 +65,26 @@ const updateAddress = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: error });
   }
 
+  const user = await User.findById(req.user.id).select("name email phone");
+  if (!user) {
+    return res.status(401).json({ success: false, message: "User not found. Please login again." });
+  }
+
+  // Only allow updates to location fields; identity remains locked to user profile
+  const payload = {
+    address: req.body.address,
+    area: req.body.area,
+    city: req.body.city,
+    state: req.body.state,
+    postal: req.body.postal,
+    name: user.name,
+    mobile: user.phone || "",
+    email: user.email,
+  };
+
   const updated = await Address.findOneAndUpdate(
     { _id: id, user: req.user.id },
-    req.body,
+    payload,
     { new: true, runValidators: true }
   );
 

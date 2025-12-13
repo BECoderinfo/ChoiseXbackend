@@ -1,9 +1,9 @@
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
 const asyncHandler = require("../utils/asyncHandler");
 const { sendOTPEmail, sendWelcomeEmail } = require("../utils/emailService");
-const { setTokenCookie, clearTokenCookie } = require("../utils/cookieHelper");
+const { setAccessTokenCookie, setRefreshTokenCookie, clearAllAuthCookies } = require("../utils/cookieHelper");
+const { generateTokenPair, verifyRefreshToken } = require("../utils/tokenHelper");
 
 const OTP_EXPIRY_MINUTES = 5;
 
@@ -13,11 +13,6 @@ function requireEnv(name) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
-}
-
-function signToken(payload, expiresIn = "7d") {
-  const secret = requireEnv("JWT_SECRET");
-  return jwt.sign(payload, secret, { expiresIn });
 }
 
 // Signup - Create new user account
@@ -59,11 +54,19 @@ const signup = asyncHandler(async (req, res) => {
     passwordHash,
   });
 
-  // Generate JWT token
-  const token = signToken({ sub: user._id, role: "user" });
+  // Generate token pair
+  const payload = { sub: user._id.toString(), role: "user" };
+  const { accessToken, refreshToken } = generateTokenPair(payload);
 
-  // Set HTTP-only cookie
-  setTokenCookie(res, token);
+  // Store refresh token in database
+  const refreshTokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+  user.refreshToken = refreshToken;
+  user.refreshTokenExpiresAt = refreshTokenExpiresAt;
+  await user.save();
+
+  // Set HTTP-only cookies
+  setAccessTokenCookie(res, accessToken);
+  setRefreshTokenCookie(res, refreshToken);
 
   // Send welcome email (non-blocking)
   sendWelcomeEmail(user.email, user.name).catch(console.error);
@@ -72,6 +75,8 @@ const signup = asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     message: "Account created successfully",
+    accessToken,
+    refreshToken,
     data: {
       id: user._id,
       name: user.name,
@@ -111,16 +116,26 @@ const login = asyncHandler(async (req, res) => {
     });
   }
 
-  // Generate JWT token
-  const token = signToken({ sub: user._id, role: "user" });
+  // Generate token pair
+  const payload = { sub: user._id.toString(), role: "user" };
+  const { accessToken, refreshToken } = generateTokenPair(payload);
 
-  // Set HTTP-only cookie
-  setTokenCookie(res, token);
+  // Store refresh token in database
+  const refreshTokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+  user.refreshToken = refreshToken;
+  user.refreshTokenExpiresAt = refreshTokenExpiresAt;
+  await user.save();
+
+  // Set HTTP-only cookies
+  setAccessTokenCookie(res, accessToken);
+  setRefreshTokenCookie(res, refreshToken);
 
   // Return user data
   res.json({
     success: true,
     message: "Login successful",
+    accessToken,
+    refreshToken,
     data: {
       id: user._id,
       name: user.name,
@@ -131,9 +146,27 @@ const login = asyncHandler(async (req, res) => {
   });
 });
 
-// Logout - Clear authentication cookie
+// Logout - Clear authentication cookies and refresh token
 const logout = asyncHandler(async (req, res) => {
-  clearTokenCookie(res);
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+
+  if (refreshToken) {
+    try {
+      const decoded = verifyRefreshToken(refreshToken);
+      const user = await User.findById(decoded.sub);
+      if (user) {
+        user.refreshToken = undefined;
+        user.refreshTokenExpiresAt = undefined;
+        await user.save();
+      }
+    } catch (error) {
+      // Token might be invalid, but we still want to clear cookies
+      console.error("Error clearing refresh token:", error);
+    }
+  }
+
+  clearAllAuthCookies(res);
+
   res.json({
     success: true,
     message: "Logged out successfully",
@@ -338,10 +371,13 @@ const verifyOTP = asyncHandler(async (req, res) => {
   user.otpExpiresAt = undefined;
   await user.save();
 
-  // Generate reset token (short-lived)
-  const resetToken = signToken(
-    { sub: user._id, action: "reset-password" },
-    "15m"
+  // Generate reset token (short-lived, 15 minutes)
+  const jwt = require("jsonwebtoken");
+  const secret = requireEnv("JWT_SECRET");
+  const resetToken = jwt.sign(
+    { sub: user._id.toString(), action: "reset-password" },
+    secret,
+    { expiresIn: "15m" }
   );
 
   res.json({
@@ -406,10 +442,114 @@ const resetPassword = asyncHandler(async (req, res) => {
   user.passwordHash = await bcrypt.hash(password, 12);
   await user.save();
 
+  // Clear refresh token on password reset for security
+  user.refreshToken = undefined;
+  user.refreshTokenExpiresAt = undefined;
+  await user.save();
+
   res.json({
     success: true,
     message: "Password reset successfully",
   });
+});
+
+// Refresh access token using refresh token
+const refreshAccessToken = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+
+  if (!refreshToken) {
+    return res.status(401).json({
+      success: false,
+      message: "Refresh token is required",
+    });
+  }
+
+  try {
+    // Verify refresh token
+    const decoded = verifyRefreshToken(refreshToken);
+
+    if (decoded.role !== "user") {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid token for user access",
+      });
+    }
+
+    // Find user and verify stored refresh token matches
+    const user = await User.findById(decoded.sub);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Check if refresh token matches and is not expired
+    if (
+      !user.refreshToken ||
+      user.refreshToken !== refreshToken ||
+      !user.refreshTokenExpiresAt ||
+      user.refreshTokenExpiresAt < new Date()
+    ) {
+      // Clear invalid refresh token
+      user.refreshToken = undefined;
+      user.refreshTokenExpiresAt = undefined;
+      await user.save();
+
+      clearAllAuthCookies(res);
+
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token is invalid or expired. Please login again.",
+      });
+    }
+
+    // Generate new access token
+    const payload = { sub: user._id.toString(), role: "user" };
+    const { generateAccessToken } = require("../utils/tokenHelper");
+    const newAccessToken = generateAccessToken(payload);
+
+    // Set new access token cookie
+    setAccessTokenCookie(res, newAccessToken);
+
+    res.json({
+      success: true,
+      accessToken: newAccessToken,
+      message: "Access token refreshed successfully",
+    });
+  } catch (error) {
+    if (error.name === "TokenExpiredError") {
+      // Clear expired refresh token from database
+      try {
+        const jwt = require("jsonwebtoken");
+        const decoded = jwt.decode(refreshToken);
+        if (decoded?.sub) {
+          const user = await User.findById(decoded.sub);
+          if (user) {
+            user.refreshToken = undefined;
+            user.refreshTokenExpiresAt = undefined;
+            await user.save();
+          }
+        }
+      } catch (err) {
+        console.error("Error clearing expired refresh token:", err);
+      }
+
+      clearAllAuthCookies(res);
+
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token has expired. Please login again.",
+      });
+    }
+
+    clearAllAuthCookies(res);
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid refresh token. Please login again.",
+    });
+  }
 });
 
 module.exports = {
@@ -422,6 +562,7 @@ module.exports = {
   sendForgotPasswordOTP,
   verifyOTP,
   resetPassword,
+  refreshAccessToken,
 };
 
 

@@ -22,7 +22,8 @@
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.8",
-    "cookie-parser": "^1.4.6"
+    "cookie-parser": "^1.4.6",
+    "razorpay": "^2.9.4"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

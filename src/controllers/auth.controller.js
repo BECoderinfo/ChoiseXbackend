@@ -1,8 +1,9 @@
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
 const Admin = require("../models/admin.model");
 const asyncHandler = require("../utils/asyncHandler");
 const { sendOTPEmail } = require("../utils/emailService");
+const { generateTokenPair, verifyRefreshToken } = require("../utils/tokenHelper");
+const { setAccessTokenCookie, setRefreshTokenCookie, clearAllAuthCookies } = require("../utils/cookieHelper");
 
 const OTP_EXPIRY_MINUTES = 5;
 
@@ -35,11 +36,6 @@ async function ensureAdminSeeded() {
   return admin;
 }
 
-function signToken(payload, expiresIn = "12h") {
-  const secret = requireEnv("JWT_SECRET");
-  return jwt.sign(payload, secret, { expiresIn });
-}
-
 const loginAdmin = asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
 
@@ -58,8 +54,27 @@ const loginAdmin = asyncHandler(async (req, res) => {
     return res.status(401).json({ success: false, message: "Invalid credentials" });
   }
 
-  const token = signToken({ sub: admin._id, role: "admin" });
-  res.json({ success: true, token });
+  // Generate token pair
+  const payload = { sub: admin._id.toString(), role: "admin" };
+  const { accessToken, refreshToken } = generateTokenPair(payload);
+
+  // Store refresh token in database
+  const refreshTokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+  admin.refreshToken = refreshToken;
+  admin.refreshTokenExpiresAt = refreshTokenExpiresAt;
+  await admin.save();
+
+  // Set cookies
+  setAccessTokenCookie(res, accessToken);
+  setRefreshTokenCookie(res, refreshToken);
+
+  // Return tokens in response (for frontend storage if needed)
+  res.json({
+    success: true,
+    accessToken,
+    refreshToken,
+    message: "Login successful",
+  });
 });
 
 const sendForgotPasswordOtp = asyncHandler(async (req, res) => {
@@ -122,7 +137,10 @@ const verifyForgotPasswordOtp = asyncHandler(async (req, res) => {
   admin.otpExpiresAt = undefined;
   await admin.save();
 
-  const resetToken = signToken({ sub: admin._id, action: "reset-password" }, "15m");
+  // Generate reset token (short-lived, 15 minutes)
+  const jwt = require("jsonwebtoken");
+  const secret = requireEnv("JWT_SECRET");
+  const resetToken = jwt.sign({ sub: admin._id, action: "reset-password" }, secret, { expiresIn: "15m" });
 
   res.json({ success: true, resetToken });
 });
@@ -138,6 +156,7 @@ const resetPassword = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
   }
 
+  const jwt = require("jsonwebtoken");
   const secret = requireEnv("JWT_SECRET");
   let payload;
   try {
@@ -156,9 +175,137 @@ const resetPassword = asyncHandler(async (req, res) => {
   }
 
   admin.passwordHash = await bcrypt.hash(password, 12);
+  // Clear refresh token on password reset for security
+  admin.refreshToken = undefined;
+  admin.refreshTokenExpiresAt = undefined;
   await admin.save();
 
   res.json({ success: true, message: "Password updated successfully" });
+});
+
+// Refresh access token using refresh token
+const refreshAccessToken = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+
+  if (!refreshToken) {
+    return res.status(401).json({
+      success: false,
+      message: "Refresh token is required",
+    });
+  }
+
+  try {
+    // Verify refresh token
+    const decoded = verifyRefreshToken(refreshToken);
+
+    if (decoded.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid token for admin access",
+      });
+    }
+
+    // Find admin and verify stored refresh token matches
+    const admin = await Admin.findById(decoded.sub);
+    if (!admin) {
+      return res.status(404).json({
+        success: false,
+        message: "Admin not found",
+      });
+    }
+
+    // Check if refresh token matches and is not expired
+    if (
+      !admin.refreshToken ||
+      admin.refreshToken !== refreshToken ||
+      !admin.refreshTokenExpiresAt ||
+      admin.refreshTokenExpiresAt < new Date()
+    ) {
+      // Clear invalid refresh token
+      admin.refreshToken = undefined;
+      admin.refreshTokenExpiresAt = undefined;
+      await admin.save();
+
+      clearAllAuthCookies(res);
+
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token is invalid or expired. Please login again.",
+      });
+    }
+
+    // Generate new access token
+    const payload = { sub: admin._id.toString(), role: "admin" };
+    const { generateAccessToken } = require("../utils/tokenHelper");
+    const newAccessToken = generateAccessToken(payload);
+
+    // Set new access token cookie
+    setAccessTokenCookie(res, newAccessToken);
+
+    res.json({
+      success: true,
+      accessToken: newAccessToken,
+      message: "Access token refreshed successfully",
+    });
+  } catch (error) {
+    if (error.name === "TokenExpiredError") {
+      // Clear expired refresh token from database
+      try {
+        const decoded = require("jsonwebtoken").decode(refreshToken);
+        if (decoded?.sub) {
+          const admin = await Admin.findById(decoded.sub);
+          if (admin) {
+            admin.refreshToken = undefined;
+            admin.refreshTokenExpiresAt = undefined;
+            await admin.save();
+          }
+        }
+      } catch (err) {
+        console.error("Error clearing expired refresh token:", err);
+      }
+
+      clearAllAuthCookies(res);
+
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token has expired. Please login again.",
+      });
+    }
+
+    clearAllAuthCookies(res);
+
+    return res.status(401).json({
+      success: false,
+      message: "Invalid refresh token. Please login again.",
+    });
+  }
+});
+
+// Logout - Clear refresh token
+const logoutAdmin = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+
+  if (refreshToken) {
+    try {
+      const decoded = verifyRefreshToken(refreshToken);
+      const admin = await Admin.findById(decoded.sub);
+      if (admin) {
+        admin.refreshToken = undefined;
+        admin.refreshTokenExpiresAt = undefined;
+        await admin.save();
+      }
+    } catch (error) {
+      // Token might be invalid, but we still want to clear cookies
+      console.error("Error clearing refresh token:", error);
+    }
+  }
+
+  clearAllAuthCookies(res);
+
+  res.json({
+    success: true,
+    message: "Logged out successfully",
+  });
 });
 
 module.exports = {
@@ -166,6 +313,8 @@ module.exports = {
   sendForgotPasswordOtp,
   verifyForgotPasswordOtp,
   resetPassword,
+  refreshAccessToken,
+  logoutAdmin,
 };
 
 

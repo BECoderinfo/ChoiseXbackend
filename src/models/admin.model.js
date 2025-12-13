@@ -6,6 +6,8 @@ const AdminSchema = new mongoose.Schema(
     passwordHash: { type: String, required: true },
     otpHash: { type: String },
     otpExpiresAt: { type: Date },
+    refreshToken: { type: String },
+    refreshTokenExpiresAt: { type: Date },
   },
   { timestamps: true }
 );

@@ -11,10 +11,15 @@ function requireEnv(name) {
 
 // Middleware to authenticate users via HTTP-only cookies
 const authenticateUser = asyncHandler(async (req, res, next) => {
-  // Try to get token from cookie first
-  let token = req.cookies?.token;
+  // Try to get access token from cookie first, then from Authorization header
+  let token = req.cookies?.accessToken;
 
-  // Fallback to Authorization header if cookie not found (for backward compatibility)
+  // Fallback to old token cookie for backward compatibility
+  if (!token) {
+    token = req.cookies?.token;
+  }
+
+  // Fallback to Authorization header if cookie not found
   if (!token) {
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith("Bearer ")) {
@@ -30,8 +35,8 @@ const authenticateUser = asyncHandler(async (req, res, next) => {
   }
 
   try {
-    const secret = requireEnv("JWT_SECRET");
-    const decoded = jwt.verify(token, secret);
+    const { verifyAccessToken } = require("../utils/tokenHelper");
+    const decoded = verifyAccessToken(token);
 
     // Check if token is for user (not admin)
     if (decoded.role && decoded.role === "admin") {
@@ -50,9 +55,11 @@ const authenticateUser = asyncHandler(async (req, res, next) => {
     next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
+      // If access token expired, suggest using refresh token
       return res.status(401).json({
         success: false,
-        message: "Session expired. Please login again.",
+        message: "Access token has expired. Please refresh your token.",
+        code: "TOKEN_EXPIRED",
       });
     }
 

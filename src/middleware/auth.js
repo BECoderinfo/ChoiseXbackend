@@ -10,20 +10,26 @@ function requireEnv(name) {
 }
 
 const authenticate = asyncHandler(async (req, res, next) => {
-  const authHeader = req.headers.authorization;
+  // Try to get access token from cookie first, then from Authorization header
+  let token = req.cookies?.accessToken;
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.substring(7); // Remove "Bearer " prefix
+    }
+  }
+
+  if (!token) {
     return res.status(401).json({
       success: false,
       message: "Authentication required. Please provide a valid token.",
     });
   }
 
-  const token = authHeader.substring(7); // Remove "Bearer " prefix
-
   try {
-    const secret = requireEnv("JWT_SECRET");
-    const decoded = jwt.verify(token, secret);
+    const { verifyAccessToken } = require("../utils/tokenHelper");
+    const decoded = verifyAccessToken(token);
 
     // Attach user info to request
     req.user = {
@@ -34,9 +40,11 @@ const authenticate = asyncHandler(async (req, res, next) => {
     next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
+      // If access token expired, suggest using refresh token
       return res.status(401).json({
         success: false,
-        message: "Token has expired. Please login again.",
+        message: "Access token has expired. Please refresh your token.",
+        code: "TOKEN_EXPIRED",
       });
     }
 
