@@ -8,6 +8,7 @@ const {
   updateOrderStatus,
   createRazorpayOrder,
   verifyRazorpayPayment,
+  markPaymentFailed,
   cancelOrder,
 } = require("../controllers/order.controller");
 
@@ -20,6 +21,7 @@ router.get("/:id", getOrder);
 router.put("/:orderId/status", updateOrderStatus);
 router.post("/:orderId/razorpay/create", createRazorpayOrder);
 router.post("/:orderId/razorpay/verify", verifyRazorpayPayment);
+router.post("/:orderId/payment-failed", markPaymentFailed);
 router.post("/:orderId/cancel", cancelOrder);
 
 module.exports = router;

@@ -676,6 +676,114 @@ const verifyRazorpayPayment = asyncHandler(async (req, res) => {
   });
 });
 
+// Explicit payment failure/cancel (called from frontend when Razorpay is closed/failed)
+const markPaymentFailed = asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const { orderId } = req.params;
+  const { reason, razorpay_order_id, razorpay_payment_id } = req.body || {};
+
+  const order = await Order.findOne({ orderId, user: userId });
+  if (!order) {
+    return res.status(404).json({ success: false, message: "Order not found" });
+  }
+
+  // If payment already completed, skip
+  if (order.paymentStatus === "Paid") {
+    return res.json({
+      success: true,
+      message: "Payment already completed",
+      data: { paymentStatus: order.paymentStatus, status: order.status },
+    });
+  }
+
+  // Avoid duplicate failure records (e.g., both modal close and payment.failed)
+  const incomingTxnId = razorpay_payment_id || razorpay_order_id || null;
+  const alreadyFailed =
+    order.paymentStatus === "Failed" ||
+    order.status === "Cancelled";
+  const duplicateTxn =
+    incomingTxnId &&
+    order.paymentHistory?.some((p) => p.txnId === incomingTxnId && p.status === "Failed");
+
+  if (alreadyFailed && duplicateTxn) {
+    return res.json({
+      success: true,
+      message: "Payment already marked failed",
+      data: {
+        paymentStatus: order.paymentStatus,
+        status: order.status,
+      },
+    });
+  }
+
+  order.paymentStatus = "Failed";
+  order.status = "Cancelled";
+  order.paymentMethod = "Razorpay";
+  order.refundStatus = "NotApplicable";
+  order.paymentHistory.push({
+    status: "Failed",
+    provider: "Razorpay",
+    amount: order.totalAmount,
+    txnId: incomingTxnId || `rp-fail-${Date.now()}`,
+    createdAt: new Date(),
+    reason: reason || "Payment cancelled/failed",
+  });
+
+  await order.save();
+
+  // Email: we do not treat this as a paid order, so only a cancellation/failure notice is relevant
+  try {
+    await order.populate({
+      path: "items.product",
+      populate: { path: "category" },
+    });
+    await order.populate("user", "name email");
+
+    const formattedItems = order.items.map((item) => ({
+      ...formatProduct(item.product),
+      quantity: item.quantity,
+      price: item.price,
+    }));
+    const { subTotal, gstAmount, totalWithGst } = calculateTotals(formattedItems);
+
+    if (order.user?.email) {
+      await sendCancellationEmail(
+        {
+          orderId: order.orderId,
+          items: formattedItems,
+          address: order.address,
+          subTotal: Number(subTotal.toFixed(2)),
+          gstAmount,
+          totalAmount: totalWithGst,
+          paymentMethod: order.paymentMethod,
+          paymentStatus: order.paymentStatus,
+          refundStatus: order.refundStatus,
+          createdAt: order.createdAt,
+          reason: "Payment failed / cancelled",
+        },
+        {
+          name: order.user.name,
+          email: order.user.email,
+        }
+      );
+    }
+  } catch (emailErr) {
+    console.error("Payment failure email error:", emailErr);
+  }
+
+  return res.json({
+    success: true,
+    message: "Order marked as payment failed and cancelled",
+    data: {
+      orderId: order.orderId,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      paymentMethod: order.paymentMethod,
+      refundStatus: order.refundStatus,
+    },
+  });
+});
+
 // User: cancel order (only before tracking/shipping; status must be Order Confirmed)
 const cancelOrder = asyncHandler(async (req, res) => {
   const userId = req.user.id;
@@ -994,6 +1102,7 @@ module.exports = {
   updateOrderStatus,
   createRazorpayOrder,
   verifyRazorpayPayment,
+  markPaymentFailed,
   updateTracking,
   getTracking,
   cancelOrder,
